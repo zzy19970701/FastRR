@@ -1,0 +1,122 @@
+library(data.table)
+library("doParallel")
+
+dir <- "/home/zhouziyang/duibi/fastrr_Y1Y2_0.01"
+setwd(dir)
+source("/home/zhouziyang/DATA-SIM/function_rr.R")
+source("/home/zhouziyang/DATA-SIM/function_Polygenic.R")
+source("/home/zhouziyang/DATA-SIM/function_corr.R")
+gen0 <- as.matrix(fread(file="/home/zhouziyang/DATA-SIM/SIM1/geno.csv"))
+K <- as.matrix(fread(file="/home/zhouziyang/DATA-SIM/SIM1/kinship.csv"))
+m<-ncol(gen0)
+n<-nrow(gen0)
+nrep <- 100
+
+kk0<-matrix(0,n,n)
+for(k in 1:m){
+  z<-as.matrix(gen0[,k])
+  kk0<-kk0+z%*%t(z)
+}
+row.names(kk0)<-NULL
+rm(z)
+
+x1<-rep(1,times=n)
+x<-as.matrix(x1)
+z<-gen0
+qq<-eigen(kk0,symmetric=T)
+
+#kin <- "2k" ##2k,5k,10k
+kinship<-c("2k","5k","10k")
+for (kk in 1:length(kinship)) {
+  for (ii in 1:4) {
+phe <- as.matrix(fread(file=paste("Y1_",kinship[kk],"_",ii,".csv",sep = "")))
+#===========2KY1=====================
+DRR.resall <- as.numeric()
+DRR.testall <- as.numeric()
+DRR.resallc <- as.numeric()
+DRR.testallc <- as.numeric()
+alltt <- as.numeric()
+
+for(irep in 1:nrep){
+  # irep <- 1
+  print(irep)
+  tt0 <- proc.time()
+  y<-as.matrix(phe[,irep])
+  ##step 1 polygentic background
+  remle2<-emma.REMLE(y, x, K, Z=NULL, ngrids=100, llim=-10, ulim=10,esp=1e-10, eig.L = NULL, eig.R = NULL)
+  remle1.B1<-emma.maineffects.B(Z=NULL,K,remle2$delta)
+  C2<-remle1.B1$mC
+  
+  Y_c <- C2%*%y
+  W_c <- C2%*%x
+  G_c <- C2%*%z
+  
+  ##step 2 correlation
+  cor.res <- cor.part(G_c,Y_c)
+  
+  ##step 3 without correction DRR
+  fit<-ridge(x=x,y=y,z=z[,cor.res],qq=qq)
+  vg<-fit[[1]]$vg
+  ve<-fit[[1]]$ve
+  lambda<-fit[[1]]$lambda
+  gamma<-fit[[3]]$gamma
+  vgk1<-fit[[3]]$vgk1
+  vgk2<-fit[[3]]$vgk2
+  df<-fit[[3]]$df
+  ORR.wald<-gamma^2/vgk1
+  
+  DRR.gamma <- matrix(NA,nrow=1,ncol = m)
+  DRR.gamma[cor.res] <- gamma/df
+  DRR.p <- matrix(NA,nrow=1,ncol = m)
+  DRR.wald<-ORR.wald/df
+  DRR.p[cor.res] <- pchisq(DRR.wald,1,lower.tail=F)
+  DRR.res <- matrix(c(DRR.gamma,vg,ve,lambda),nrow=1)
+  DRR.test <- matrix(DRR.p,nrow=1)
+  DRR.resall <- rbind(DRR.resall,DRR.res)
+  DRR.testall <- rbind(DRR.testall,DRR.test)
+  
+  
+  ##step 3 correction DRR
+  fit.cor<-ridge(x=W_c,y=Y_c,z=G_c[,cor.res],qq=qq)
+  vgc<-fit.cor[[1]]$vg
+  vec<-fit.cor[[1]]$ve
+  lambdac<-fit.cor[[1]]$lambda
+  gammac<-fit.cor[[3]]$gamma
+  vgk1c<-fit.cor[[3]]$vgk1
+  vgk2c<-fit.cor[[3]]$vgk2
+  dfc<-fit.cor[[3]]$df
+  ORR.waldc<-gammac^2/vgk1c
+  
+  DRR.gammac <- matrix(NA,nrow=1,ncol = m)
+  DRR.gammac[cor.res] <- gammac/dfc
+  DRR.pc <- matrix(NA,nrow=1,ncol = m)
+  DRR.waldc <- ORR.waldc/dfc
+  DRR.pc[cor.res] <- pchisq(DRR.waldc,1,lower.tail=F)
+  DRR.resallc <- rbind(DRR.resallc,DRR.gammac)
+  DRR.testallc <- rbind(DRR.testallc,DRR.pc)
+  tt1 <- proc.time()-tt0
+  alltt <- rbind(alltt,matrix(tt1,nrow = 1))
+}
+
+DRR.res2 <- DRR.resall
+DRR.test2 <- DRR.testall
+DRR.res2c <- DRR.resallc
+DRR.test2c <- DRR.testallc
+
+DRR.res2[DRR.test2>(0.05/(length(cor.res)))] <- NA
+DRR.test2[DRR.test2>(0.05/(length(cor.res)))] <- NA
+DRR.res2c[DRR.test2c>(0.05/(length(cor.res)))] <- NA
+DRR.test2c[DRR.test2c>(0.05/(length(cor.res)))] <- NA
+#========================
+write.csv(DRR.resall,file=paste("fastDRR_alleff_Y1_",kinship[kk],"_",ii,".csv",sep=""),row.names=FALSE)
+write.csv(DRR.testall,file=paste("fastDRR_allpv_Y1_",kinship[kk],"_",ii,".csv",sep=""),row.names=FALSE)
+write.csv(DRR.res2,file=paste("fastDRR_eff_Y1_",kinship[kk],"_",ii,".csv",sep=""),row.names=FALSE)
+write.csv(DRR.test2,file=paste("fastDRR_pv_Y1_",kinship[kk],"_",ii,".csv",sep=""),row.names=FALSE)
+
+write.csv(DRR.resallc,file=paste("fastDRRc_alleff_Y1_",kinship[kk],"_",ii,".csv",sep=""),row.names=FALSE)
+write.csv(DRR.testallc,file=paste("fastDRRc_allpv_Y1_",kinship[kk],"_",ii,".csv",sep=""),row.names=FALSE)
+write.csv(DRR.res2c,file=paste("fastDRRc_eff_Y1_",kinship[kk],"_",ii,".csv",sep=""),row.names=FALSE)
+write.csv(DRR.test2c,file=paste("fastDRRc_pv_Y1_",kinship[kk],"_",ii,".csv",sep=""),row.names=FALSE)
+write.csv(alltt,file = paste("fastDRR_time_Y1_",kinship[kk],"_",ii,".csv",sep = ''))
+  }
+}
